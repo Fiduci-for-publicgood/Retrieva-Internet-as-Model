@@ -13,6 +13,14 @@ import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
+import io.retrieva.core.sources.ArxivSource;
+import io.retrieva.core.sources.MediaWikiSource;
+import io.retrieva.core.sources.Politeness;
+import io.retrieva.core.sources.SafeHttp;
+import java.net.InetAddress;
+import java.net.URI;
+import java.time.Duration;
+import java.util.Set;
 import java.util.concurrent.atomic.AtomicInteger;
 
 /**
@@ -349,12 +357,92 @@ public final class Checks {
         return f;
     }
 
+    // -- production sources ----------------------------------------------------------------------------
+    static void blocked(List<String> f, SafeHttp h, String url, String why) {
+        try {
+            h.check(URI.create(url));
+            f.add("allowed but should be blocked (" + why + "): " + url);
+        } catch (SafeHttp.BlockedException expected) {
+            // ok
+        }
+    }
+
+    public static List<String> sources() throws Exception {
+        List<String> f = new ArrayList<>();
+        SafeHttp http = new SafeHttp(Set.of("en.wikipedia.org", "export.arxiv.org"), 1024, "retrieva-test/1.0", Duration.ofSeconds(1));
+        try {
+            http.check(URI.create("https://en.wikipedia.org/w/api.php?x=1"));
+        } catch (SafeHttp.BlockedException e) {
+            f.add("allowlisted https url blocked: " + e.getMessage());
+        }
+        blocked(f, http, "http://en.wikipedia.org/x", "plain http");
+        blocked(f, http, "https://evil.example.io/x", "host not allowlisted");
+        blocked(f, http, "https://en.wikipedia.org.evil.io/x", "suffix trick");
+        blocked(f, http, "https://user:pw@en.wikipedia.org/x", "credentials");
+        blocked(f, http, "https://en.wikipedia.org:8443/x", "port");
+        blocked(f, http, "https://127.0.0.1/x", "loopback literal");
+        blocked(f, http, "file:///etc/passwd", "file scheme");
+        blocked(f, http, "ftp://en.wikipedia.org/x", "ftp");
+
+        for (String ip : new String[] {"127.0.0.1", "10.1.2.3", "172.16.0.1", "192.168.1.1", "169.254.169.254", "100.64.0.1", "0.0.0.0",
+                "224.0.0.1", "240.0.0.1", "::1", "fe80::1", "fc00::1", "fd12:3456::1", "::ffff:127.0.0.1", "::ffff:10.0.0.1"}) {
+            if (SafeHttp.isPublic(InetAddress.getByName(ip))) f.add("private address treated as public: " + ip);
+        }
+        for (String ip : new String[] {"8.8.8.8", "1.1.1.1", "208.80.154.224", "2606:4700:4700::1111"}) {
+            if (!SafeHttp.isPublic(InetAddress.getByName(ip))) f.add("public address treated as private: " + ip);
+        }
+
+        MediaWikiSource wiki = new MediaWikiSource(http, new Politeness(0, 5, 1000), "en.wikipedia.org", Duration.ofSeconds(1));
+        String body = "{\"batchcomplete\":true,\"query\":{\"pages\":[{\"pageid\":1,\"ns\":0,\"title\":\"Coffee & memory\",\"index\":1,"
+                + "\"extract\":\"Coffee improves memory in adults.\",\"touched\":\"2025-09-01T12:00:00Z\"},"
+                + "{\"pageid\":2,\"title\":\"Empty\",\"extract\":\"\"},{\"pageid\":3,\"title\":\"NoExtract\"}]}}";
+        List<Source.Doc> docs = wiki.parse(body);
+        eq(f, "wiki docs", 1, docs.size());
+        eq(f, "wiki locator", "en.wikipedia.org/wiki/Coffee___memory", docs.get(0).locator());
+        eq(f, "wiki time", 1756728000.0, docs.get(0).added());
+        eq(f, "wiki empty", 0, wiki.parse("{\"batchcomplete\":true}").size());
+        String u = wiki.url("caf\u00e9 & memory", 500).toString();
+        if (!u.startsWith("https://en.wikipedia.org/w/api.php?") || !u.contains("gsrlimit=20") || u.contains(" ")) f.add("bad wiki url " + u);
+
+        ArxivSource ax = new ArxivSource(http, new Politeness(0, 5, 1000), Duration.ofSeconds(1));
+        String atom = "<?xml version=\"1.0\"?><feed xmlns=\"http://www.w3.org/2005/Atom\"><entry><id>http://arxiv.org/abs/2101.00001v1</id>"
+                + "<published>2021-01-01T00:00:00Z</published><title>Caffeine and\n  memory</title><summary>Caffeine improves memory.</summary></entry>"
+                + "<entry><id>http://arxiv.org/abs/2101.00002v2</id><title>x</title><summary> </summary></entry></feed>";
+        List<Source.Doc> ad = ax.parse(atom);
+        eq(f, "arxiv docs", 1, ad.size());
+        eq(f, "arxiv locator", "arxiv.org/abs/2101.00001v1", ad.get(0).locator());
+        eq(f, "arxiv text", "Caffeine and memory. Caffeine improves memory.", ad.get(0).text());
+        try {
+            ax.parse("<?xml version=\"1.0\"?><!DOCTYPE feed [<!ENTITY x SYSTEM \"file:///etc/passwd\">]><feed><entry><id>&x;</id></entry></feed>");
+            f.add("XXE doctype accepted");
+        } catch (org.xml.sax.SAXException expected) {
+            // ok
+        }
+
+        Politeness pol = new Politeness(50, 2, 300);
+        long t = System.nanoTime();
+        for (int i = 0; i < 4; i++) pol.acquire();
+        double ms = (System.nanoTime() - t) / 1e6;
+        if (ms < 140) f.add("rate spacing not applied: " + ms + "ms for 4 slots at 50ms");
+        pol.failure();
+        pol.failure();
+        try {
+            pol.acquire();
+            f.add("breaker did not open");
+        } catch (java.io.IOException expected) {
+            // ok
+        }
+        Thread.sleep(350);
+        pol.acquire();      // half-open after the cool-down
+        return f;
+    }
+
     public static void main(String[] args) throws Exception {
-        String[] names = {"parityText", "parityParsers", "parityEngine", "memory", "ingestion", "json", "quickBudget", "longForm", "savedRouteReplay", "deadlineCut"};
+        String[] names = {"parityText", "parityParsers", "parityEngine", "memory", "ingestion", "json", "sources", "quickBudget", "longForm", "savedRouteReplay", "deadlineCut"};
         int bad = 0;
         for (String n : names) {
             long t = System.nanoTime();
-            List<String> r = (List<String>) Checks.class.getMethod(n).invoke(null);
+            @SuppressWarnings("unchecked") List<String> r = (List<String>) Checks.class.getMethod(n).invoke(null);
             System.out.printf("%-18s %s (%.1fs)%n", n, r.isEmpty() ? "ok" : "FAIL " + r.size(), (System.nanoTime() - t) / 1e9);
             r.stream().limit(15).forEach(x -> System.out.println("    " + x));
             if (!r.isEmpty()) bad++;
