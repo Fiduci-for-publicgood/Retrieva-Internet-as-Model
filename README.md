@@ -10,7 +10,7 @@ A process that holds no state between questions. Everything it knows lives in tw
 ```
 python -m retrieva "caffeine enhances alertness" --corpus examples/corpus.json
 python -m retrieva "coffee improves memory"      --corpus examples/corpus.json   # contested -> unresolved
-python -m retrieva "..." --live                                                  # + Wikipedia (see limits)
+python -m retrieva "..." --live                                                  # + Wikipedia
 python -m unittest discover -s tests
 ```
 Stdlib only, Python 3.11+.
