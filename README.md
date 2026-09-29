@@ -40,9 +40,3 @@ Readings are clustered and vote-counted; a reading is dropped when a better-vote
 
 ## Injection defence (the restricted ingestion line)
 allowlist gate (unknown hosts rejected) → size caps → strip HTML/scripts/URLs/markdown/invisible+bidi chars → sentence-level directive/injection filter → triple extraction → strict charset validation (`[a-z0-9' -]`, no punctuation, so payloads can't survive) → store. Files read back from disk are re-validated when first touched. Only triples cross the boundary.
-
-## Honest limits
-- **"Whole internet in microseconds" is not physically possible.** What is fast: memory lookups (~50 ms over a full 8 MB store ≈ 200k triples, cold load ≈ 0.35 s). Live fetches are bounded by network latency and the deadline (3 s quick, 7–15 s long); an unfinished swarm returns `unresolved` rather than overrunning. Wikipedia is blocked by this sandbox's proxy, so `WikipediaSource` is **untested live**; the swarm is tested against the offline corpus and a slow-source deadline test.
-- "Synonym/antonym" understanding is a small hand-written lexicon (`lexicon.py`) and rule-based extraction, not a language model. It handles negation ("does not improve", "no evidence that…") but misses paraphrase and most nuance. Extend the lexicon, or swap `extract.py` for an NLP/LLM extractor behind the same interface.
-- Sentence filtering cannot stop a malicious page on an allowlisted host from stating *false facts*; trust weights and cross-host corroboration are the mitigation.
-- Sources are pluggable (`search(query, limit) -> [Doc]`); add real crawlers there.
