@@ -1,0 +1,6 @@
+target/
+.git/
+reference-python/
+sidecar/
+docs/
+*.md

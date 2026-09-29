@@ -77,6 +77,10 @@ public final class Agent implements AutoCloseable {
             return new Config(b, threshold, minSources, layers, docsPerTopic, maxConcurrentCrawlers, clock);
         }
 
+        public Config withMaxCrawlers(int n) {
+            return new Config(budget, threshold, minSources, layers, docsPerTopic, n, clock);
+        }
+
         public Config withClock(DoubleSupplier c) {
             return new Config(budget, threshold, minSources, layers, docsPerTopic, maxConcurrentCrawlers, c);
         }

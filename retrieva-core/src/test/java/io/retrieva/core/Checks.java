@@ -14,6 +14,7 @@ import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
 import io.retrieva.core.sources.ArxivSource;
+import io.retrieva.core.sources.CorpusSource;
 import io.retrieva.core.sources.MediaWikiSource;
 import io.retrieva.core.sources.Politeness;
 import io.retrieva.core.sources.SafeHttp;
@@ -103,7 +104,7 @@ public final class Checks {
         List<String> f = new ArrayList<>();
         Map<String, Object> g = golden();
         double now = Json.num(g.get("now"));
-        CorpusSource src = new CorpusSource(RES.resolve("corpus.json"));
+        CorpusSource src = CorpusSource.load(RES.resolve("corpus.json"));
         for (Object o : Json.arr(g.get("claims"))) {
             Map<String, Object> c = Json.obj(o);
             String in = Json.str(c.get("in"));
@@ -262,7 +263,7 @@ public final class Checks {
 
     public static List<String> quickBudget() throws Exception {
         List<String> f = new ArrayList<>();
-        CorpusSource base = new CorpusSource(RES.resolve("corpus.json"));
+        CorpusSource base = CorpusSource.load(RES.resolve("corpus.json"));
         Laggy src = new Laggy(base, 1400);         // layers 1-2 fit in 3 s, layer 3 would not
         try (Agent agent = new Agent(List.of(src), new Gate(Map.of("journal.example.org", 0.9)), Agent.Config.defaults())) {
             long t = System.nanoTime();
@@ -323,7 +324,7 @@ public final class Checks {
 
     public static List<String> savedRouteReplay() throws Exception {
         List<String> f = new ArrayList<>();
-        CorpusSource base = new CorpusSource(RES.resolve("corpus.json"));
+        CorpusSource base = CorpusSource.load(RES.resolve("corpus.json"));
         Laggy src = new Laggy(base, 0);
         Memory mem = Memory.empty(() -> System.currentTimeMillis() / 1000.0);
         try (Agent agent = new Agent(List.of(src), new Gate(base.trust), Agent.Config.defaults())) {

@@ -1,0 +1,51 @@
+name: ci
+on:
+  push: { branches: [main] }
+  pull_request:
+
+jobs:
+  reference-python:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with: { python-version: "3.11" }
+      - name: Reference implementation tests
+        run: cd reference-python && python -m unittest discover -s tests -v
+      - name: Golden vectors are up to date
+        run: |
+          python reference-python/tools/gen_golden.py
+          git diff --exit-code -- retrieva-core/src/test/resources
+
+  java:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with: { distribution: temurin, java-version: "21", cache: maven }
+      - name: Build and test (core parity, Arrow, Tomcat integration)
+        run: mvn -B verify
+      - uses: actions/upload-artifact@v4
+        with: { name: retrieva-war, path: retrieva-server/target/ROOT.war }
+      - uses: actions/upload-artifact@v4
+        with: { name: java-memory-fixture, path: retrieva-arrow/target/it-memory }
+
+  sidecar:
+    needs: java
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with: { python-version: "3.11" }
+      - uses: actions/download-artifact@v4
+        with: { name: java-memory-fixture, path: java-memory }
+      - run: pip install -e "sidecar[test]"
+      - name: Sidecar tests, including reading Java-written Arrow memory
+        run: cd sidecar && RETRIEVA_JAVA_FIXTURE="$GITHUB_WORKSPACE/java-memory" python -m pytest -v
+
+  docker:
+    needs: java
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: docker build -t retrieva:ci .

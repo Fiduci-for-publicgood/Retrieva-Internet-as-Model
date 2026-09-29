@@ -1,0 +1,18 @@
+[project]
+name = "retrieva-sidecar"
+version = "1.0.0"
+description = "Pandas analytics over Retrieva's Arrow memory (read-only; never in the request path)"
+requires-python = ">=3.10"
+dependencies = ["pandas>=2.0", "pyarrow>=14"]
+
+[project.optional-dependencies]
+test = ["pytest>=8"]
+
+[project.scripts]
+retrieva-sidecar = "retrieva_sidecar.cli:main"
+
+[tool.setuptools]
+packages = ["retrieva_sidecar"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

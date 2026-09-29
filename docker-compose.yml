@@ -1,0 +1,15 @@
+services:
+  retrieva:
+    build: .
+    ports: ["8080:8080"]
+    environment:
+      RETRIEVA_API_TOKEN: ${RETRIEVA_API_TOKEN:?set a token of at least 16 characters}
+      RETRIEVA_SOURCES: wikipedia,arxiv
+      RETRIEVA_USER_AGENT: "retrieva/1.0 (+mailto:you@example.org)"   # identify yourself to the sites you crawl
+    volumes: ["retrieva-memory:/var/lib/retrieva"]
+    read_only: true
+    tmpfs: ["/tmp", "/usr/local/tomcat/temp", "/usr/local/tomcat/work", "/usr/local/tomcat/logs"]
+    cap_drop: [ALL]
+    security_opt: ["no-new-privileges:true"]
+volumes:
+  retrieva-memory: {}

@@ -1,0 +1,18 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- Minimal hardened Tomcat 10.1 config: one HTTP connector on virtual threads, no shutdown port, no AJP, no default webapps. -->
+<Server port="-1">
+  <Service name="Catalina">
+    <Connector port="8080" protocol="HTTP/1.1"
+               useVirtualThreads="true"
+               connectionTimeout="10000" keepAliveTimeout="15000" maxKeepAliveRequests="100"
+               maxPostSize="262144" maxHttpHeaderSize="8192" maxParameterCount="100"
+               server="" xpoweredBy="false" />
+    <Engine name="Catalina" defaultHost="localhost">
+      <Host name="localhost" appBase="webapps" unpackWARs="false" autoDeploy="false" deployOnStartUp="true">
+        <Valve className="org.apache.catalina.valves.ErrorReportValve" showReport="false" showServerInfo="false" />
+        <Valve className="org.apache.catalina.valves.AccessLogValve" directory="/dev" prefix="stdout" suffix="" fileDateFormat=""
+               pattern="%h %t &quot;%r&quot; %s %b %D" />
+      </Host>
+    </Engine>
+  </Service>
+</Server>

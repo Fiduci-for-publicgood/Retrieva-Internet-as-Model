@@ -1,4 +1,8 @@
-package io.retrieva.core;
+package io.retrieva.core.sources;
+
+import io.retrieva.core.Json;
+import io.retrieva.core.Nlp;
+import io.retrieva.core.Source;
 
 import io.retrieva.core.Source.Doc;
 import java.io.IOException;
@@ -14,34 +18,31 @@ import java.util.Map;
 import java.util.Set;
 import java.util.TreeSet;
 
-/** Fixed-corpus source for tests: TF-IDF-ish ranking identical to the Python reference. */
-final class CorpusSource implements Source {
-    final List<Doc> docs = new ArrayList<>();
-    final Map<String, Double> trust = new HashMap<>();
+/**
+ * Offline corpus source (air-gapped or internal documents, and tests): TF-IDF-style ranking, identical to the Python
+ * reference. Corpus file: {"trust": {host: 0..1}, "docs": [{"locator": "host/path", "added": "YYYY-MM-DD", "text": "..."}]}.
+ */
+public final class CorpusSource implements Source {
+    public final List<Doc> docs = new ArrayList<>();
+    public final Map<String, Double> trust = new HashMap<>();
     private final List<Set<String>> stems = new ArrayList<>();
     private final Map<String, Double> idf = new HashMap<>();
 
-    CorpusSource(Path json) throws IOException {
-        this(load(json, new HashMap<>()));
-        trust.putAll(lastTrust);
-    }
-
-    private static Map<String, Double> lastTrust = new HashMap<>();
-
-    private static List<Doc> load(Path json, Map<String, Double> trustOut) throws IOException {
+    /** Load a corpus file; host trust values come from the file's "trust" object. */
+    public static CorpusSource load(Path json) throws IOException {
         Map<String, Object> root = Json.obj(Json.parse(Files.readString(json, StandardCharsets.UTF_8)));
-        Json.obj(root.get("trust")).forEach((k, v) -> trustOut.put(k, Json.num(v)));
-        lastTrust = trustOut;
         List<Doc> docs = new ArrayList<>();
         for (Object o : Json.arr(root.get("docs"))) {
             Map<String, Object> d = Json.obj(o);
             double added = LocalDate.parse(Json.str(d.get("added"))).atStartOfDay().toEpochSecond(ZoneOffset.UTC);
             docs.add(new Doc(Json.str(d.get("locator")), Json.str(d.get("text")), added));
         }
-        return docs;
+        CorpusSource c = new CorpusSource(docs);
+        Json.obj(root.get("trust")).forEach((k, v) -> c.trust.put(k, Json.num(v)));
+        return c;
     }
 
-    CorpusSource(List<Doc> docs) {
+    public CorpusSource(List<Doc> docs) {
         this.docs.addAll(docs);
         Map<String, Integer> df = new HashMap<>();
         for (Doc d : docs) {
