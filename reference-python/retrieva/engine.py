@@ -362,7 +362,7 @@ class Agent:
             seen |= set(content(q))
         heat: Counter = Counter()
         for e in tally.evidence:
-            for w in content(e.triple.s) | content(e.triple.o):
+            for w in sorted(content(e.triple.s) | content(e.triple.o)):   # sorted: ties must not depend on hash order
                 if w not in seen:
                     heat[w] += e.weight
         return [f"{claim.subject} {w}" for w, _ in heat.most_common(size)]

@@ -1,3 +1,7 @@
 __pycache__/
 .retrieva/
 *.pyc
+target/
+*.class
+.idea/
+*.iml
