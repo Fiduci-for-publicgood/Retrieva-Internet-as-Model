@@ -42,7 +42,8 @@ public final class AppListener implements ServletContextListener {
             loaded.warnings().forEach(w -> LOG.warning("memory: " + w));
             memory = loaded.memory();
             LOG.info("memory loaded: " + memory.store.size() + " triples, " + memory.outline.routeCount() + " routes, sources " + built.sources().size());
-            agent = new Agent(built.sources(), built.gate(), Agent.Config.defaults().withBudget(cfg.quickBudgetSeconds()).withMaxCrawlers(cfg.maxCrawlers()));
+            agent = new Agent(built.sources(), built.gate(), Agent.Config.defaults().withBudget(cfg.quickBudgetSeconds()).withMaxCrawlers(cfg.maxCrawlers())
+                    .withDeliberation(cfg.deliberate(), cfg.maxCycles()));
         } catch (IOException e) {
             throw new IllegalStateException("cannot start: " + e.getMessage(), e);
         }

@@ -177,6 +177,12 @@ public final class ApiHandler {
             m.put("stance", v.stance());
             m.put("text", v.text());
             m.put("weight", v.weight());
+            m.put("subject", v.subject());
+            m.put("predicate", v.predicate());
+            m.put("object", v.object());
+            m.put("source", v.host());
+            m.put("source_month", v.month());
+            m.put("source_trust", v.trust());
             out.add(m);
         }
         return out;
@@ -201,10 +207,13 @@ public final class ApiHandler {
         m.put("resolved", a.resolved());
         m.put("shares", a.shares());
         m.put("answer", a.prose());
+        m.put("answer_numbered", a.numbered());
         m.put("voices", voices(a.voices()));
         m.put("elapsed_ms", a.elapsedMs());
         m.put("from_memory", a.fromMemory());
         m.put("rounds", a.rounds());
+        m.put("cycles", a.cycles());
+        m.put("converged", a.converged());
         Map<String, Object> st = new LinkedHashMap<>();
         st.put("docs", a.stats().docs);
         st.put("rejected_docs", a.stats().rejectedDocs);
@@ -218,6 +227,7 @@ public final class ApiHandler {
     private Map<String, Object> longAnswer(LongAnswer a, boolean withRoute) {
         Map<String, Object> m = new LinkedHashMap<>();
         m.put("answer", a.prose());
+        m.put("answer_numbered", a.numbered());
         m.put("voices", voices(a.voices()));
         m.put("elapsed_ms", a.elapsedMs());
         m.put("budget_s", a.budget());

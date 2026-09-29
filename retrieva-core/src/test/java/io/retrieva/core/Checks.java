@@ -130,7 +130,7 @@ public final class Checks {
                     eq(f, in + " voice " + i + " text", w.get(2), v.text());
                     near(f, in + " voice " + i + " weight", Json.num(w.get(3)), v.weight());
                 }
-                eq(f, in + " prose", c.get("prose"), a.prose());
+                eq(f, in + " prose", c.get("prose"), a.numbered());
                 List<Object> wantR = Json.arr(c.get("route"));
                 eq(f, in + " route length", wantR.size(), a.route().size());
                 for (int i = 0; i < Math.min(wantR.size(), a.route().size()); i++) {
@@ -309,7 +309,7 @@ public final class Checks {
             if (src.peak.get() > 128) f.add("more than 128 concurrent crawlers: " + src.peak.get());
             int prev = Integer.MAX_VALUE;
             boolean later = false;
-            for (String line : a.prose().split("\n")) {
+            for (String line : a.numbered().split("\n")) {
                 int pos = Integer.parseInt(line.substring(0, line.indexOf('.')));
                 if (!Agent.PRIME_VOICES.contains(pos)) f.add("non-prime voice " + pos);
                 if (pos >= prev) f.add("voices not descending at " + pos);
@@ -438,8 +438,117 @@ public final class Checks {
         return f;
     }
 
+    // -- prose -----------------------------------------------------------------------------------------
+    static Voice voice(int pos, String stance, String s, String p, String o, String host, String month, double trust) {
+        return new Voice(pos, stance, s + " " + p + " " + o, 0.5, s, p, o, host, month, trust);
+    }
+
+    public static List<String> prose() {
+        List<String> f = new ArrayList<>();
+        eq(f, "verb 3sg", "improves", Prose.verb("improve", false));
+        eq(f, "verb plural", "improve", Prose.verb("improve", true));
+        eq(f, "neg 3sg", "does not improve", Prose.verb("not improve", false));
+        eq(f, "neg plural", "do not improve", Prose.verb("not improve", true));
+        eq(f, "copula", "is", Prose.verb("is", false));
+        eq(f, "copula plural", "are", Prose.verb("is", true));
+        eq(f, "negated copula", "is not", Prose.verb("not is", false));
+        eq(f, "negated copula plural", "are not", Prose.verb("not is", true));
+        eq(f, "has plural", "have", Prose.verb("has", true));
+        eq(f, "negated has", "does not have", Prose.verb("not has", false));
+        eq(f, "third -e", "enhances", Prose.thirdPerson("enhance"));
+        eq(f, "third -y", "worries", Prose.thirdPerson("worry"));
+        eq(f, "third vowel-y", "delays", Prose.thirdPerson("delay"));
+        eq(f, "third -ch", "watches", Prose.thirdPerson("watch"));
+        for (String pl : new String[] {"sales", "studies", "nutrients"}) if (!Prose.plural(pl)) f.add("plural missed: " + pl);
+        for (String sg : new String[] {"class", "virus", "physics", "memory", "coffee", "analysis"}) if (Prose.plural(sg)) f.add("singular misread as plural: " + sg);
+        eq(f, "when", " in September 2025", Prose.when("2025-09"));
+        eq(f, "when unknown epoch", "", Prose.when("1970-01"));
+        eq(f, "when malformed", "", Prose.when("bad"));
+        eq(f, "when bad month", "", Prose.when("2025-13"));
+        eq(f, "empty", Prose.EMPTY, Prose.realize(List.of()));
+
+        List<Voice> vs = new ArrayList<>(List.of(
+                voice(19, "neutral", "poor sleep", "impair", "memory", "journal.example.org", "1970-01", 0.9),
+                voice(31, "for", "coffee", "improve", "memory", "journal.example.org", "2025-06", 0.9),
+                voice(23, "against", "coffee", "not improve", "memory", "news.example.com", "2024-03", 0.5),
+                voice(29, "for", "caffeine", "enhance", "alertness", "health.example.gov", "2025-01", 0.85)));
+        eq(f, "one paragraph, reverse order, connectives follow stance",
+                "According to journal.example.org in June 2025, coffee improves memory. "
+                        + "Likewise, caffeine enhances alertness, health.example.gov confirms in January 2025. "
+                        + "However, a lower-trust source, news.example.com in March 2024, claims that coffee does not improve memory. "
+                        + "For context, poor sleep impairs memory, journal.example.org confirms.", Prose.realize(vs));
+        eq(f, "weak source, clause-first shape", "Coffee does not improve memory, though that claim comes from blog.example.net in February 2023, a lower-trust source.",
+                Prose.sentence(voice(9, "against", "coffee", "not improve", "memory", "blog.example.net", "2023-02", 0.4), null, 1));
+        eq(f, "strong source, clause-first shape", "Tea improves focus, journal.example.org confirms in June 2025.",
+                Prose.sentence(voice(9, "for", "tea", "improve", "focus", "journal.example.org", "2025-06", 0.9), null, 1));
+        eq(f, "deterministic", Prose.realize(vs), Prose.realize(new ArrayList<>(vs.reversed())));
+
+        String two = Prose.realize(List.of(voice(40, "for", "tea", "improve", "focus", "journal.example.org", "2025-06", 0.9),
+                voice(31, "against", "sugar", "harm", "teeth", "health.example.gov", "2025-05", 0.9)));
+        if (!two.contains("\n\n")) f.add("areas must be separate paragraphs");
+        String second = two.substring(two.indexOf("\n\n") + 2);
+        if (second.startsWith("However") || second.startsWith("On the other hand")) f.add("connective bridged two areas: " + second);
+
+        List<Voice> many = new ArrayList<>();
+        for (int i = 0; i < 7; i++) many.add(voice(31 - i, "for", "topic" + i, "improve", "thing", "journal.example.org", "2025-06", 0.9));
+        eq(f, "paragraph break after five sentences", 1, Prose.realize(many).split("\n\n").length - 1);
+
+        for (String para : Prose.realize(many).split("\n\n")) {
+            for (String sent : para.split("(?<=\\.) ")) {
+                if (!Character.isUpperCase(sent.charAt(0))) f.add("sentence not capitalised: " + sent);
+                if (!sent.endsWith(".")) f.add("sentence not terminated: " + sent);
+            }
+        }
+        String all = Prose.realize(vs);
+        if (all.contains("  ")) f.add("double space");
+        if (all.matches("(?s)^\\d+\\..*")) f.add("prose starts with a crawler number");
+        return f;
+    }
+
+    // -- deliberation ----------------------------------------------------------------------------------
+    public static List<String> deliberation() throws Exception {
+        List<String> f = new ArrayList<>();
+        CorpusSource base = CorpusSource.load(RES.resolve("corpus.json"));
+        Agent.Config shallow = Agent.Config.defaults();
+        Agent.Config deep = shallow.withDeliberation(true, 12);
+
+        Memory a = Memory.empty(() -> System.currentTimeMillis() / 1000.0), b = Memory.empty(() -> System.currentTimeMillis() / 1000.0);
+        Answer plain, thought;
+        try (Agent ag = new Agent(List.of(base), new Gate(base.trust), shallow)) {
+            plain = ag.ask("coffee improves memory", a);
+        }
+        try (Agent ag = new Agent(List.of(base), new Gate(base.trust), deep)) {
+            thought = ag.ask("coffee improves memory", b);
+        }
+        eq(f, "plain agent does not deliberate", 0, plain.cycles());
+        if (thought.cycles() < 1) f.add("deliberating agent ran no cycles");
+        if (!thought.converged()) f.add("finite corpus should converge, ran " + thought.cycles() + " cycles");
+        if (b.store.size() < a.store.size()) f.add("deliberation learned less than the plain swarm");
+        if (thought.elapsedMs() > 3000) f.add("deliberation over 3s: " + thought.elapsedMs());
+
+        try (Agent ag = new Agent(List.of(base), new Gate(base.trust), deep)) {
+            Answer clean = ag.ask("caffeine enhances alertness", Memory.empty(() -> System.currentTimeMillis() / 1000.0));
+            eq(f, "clean verdict unchanged by deliberation", "for", clean.verdict());
+            Memory mem = Memory.empty(() -> System.currentTimeMillis() / 1000.0);
+            ag.ask("caffeine enhances alertness", mem);
+            Answer replay = ag.ask("caffeine enhances alertness", mem);
+            if (!replay.fromMemory()) f.add("replay not from memory");
+            eq(f, "replay does not deliberate", 0, replay.cycles());
+        }
+
+        Laggy slow = new Laggy(base, 250);          // each probe costs 250 ms: the loop must stop at the 3 s cap
+        try (Agent ag = new Agent(List.of(slow), new Gate(base.trust), deep)) {
+            long t = System.nanoTime();
+            Answer x = ag.ask("coffee improves memory", Memory.empty(() -> System.currentTimeMillis() / 1000.0));
+            double s = (System.nanoTime() - t) / 1e9;
+            if (s > 3.3) f.add("cycling overran the 3s budget: " + s);
+            if (x.cycles() < 1) f.add("no reflection cycle fit in the budget");
+        }
+        return f;
+    }
+
     public static void main(String[] args) throws Exception {
-        String[] names = {"parityText", "parityParsers", "parityEngine", "memory", "ingestion", "json", "sources", "quickBudget", "longForm", "savedRouteReplay", "deadlineCut"};
+        String[] names = {"parityText", "parityParsers", "parityEngine", "memory", "ingestion", "json", "sources", "prose", "quickBudget", "longForm", "savedRouteReplay", "deadlineCut", "deliberation"};
         int bad = 0;
         for (String n : names) {
             long t = System.nanoTime();

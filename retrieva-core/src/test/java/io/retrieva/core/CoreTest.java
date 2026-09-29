@@ -18,6 +18,8 @@ class CoreTest {
     @Test void ingestion() { ok(Checks.ingestion()); }
     @Test void json() { ok(Checks.json()); }
     @Test void sources() throws Exception { ok(Checks.sources()); }
+    @Test void prose() { ok(Checks.prose()); }
+    @Test void deliberation() throws Exception { ok(Checks.deliberation()); }
     @Test void quickBudget() throws Exception { ok(Checks.quickBudget()); }
     @Test void longForm() throws Exception { ok(Checks.longForm()); }
     @Test void savedRouteReplay() throws Exception { ok(Checks.savedRouteReplay()); }

@@ -39,7 +39,7 @@ public final class ApiChecks {
         CorpusSource corpus = CorpusSource.load(CORPUS);
         List<Source> sources = new ArrayList<>(List.of(corpus));
         sources.addAll(List.of(extra));
-        Agent agent = new Agent(sources, new Gate(corpus.trust), Agent.Config.defaults().withBudget(cfg.quickBudgetSeconds()));
+        Agent agent = new Agent(sources, new Gate(corpus.trust), Agent.Config.defaults().withBudget(cfg.quickBudgetSeconds()).withDeliberation(cfg.deliberate(), cfg.maxCycles()));
         Memory memory = Memory.empty(() -> System.currentTimeMillis() / 1000.0);
         Metrics metrics = new Metrics();
         return new Fixture(new ApiHandler(agent, memory, cfg, metrics), agent, memory, metrics);
@@ -122,6 +122,11 @@ public final class ApiChecks {
                 prev = pos;
             }
             if (!m.containsKey("route")) f.add("route requested but missing");
+            if (!m.containsKey("answer_numbered")) f.add("numbered audit form missing");
+            if (!(m.get("cycles") instanceof Number n && n.intValue() >= 1)) f.add("deliberation cycles not reported");
+            if (!Json.str(m.get("answer")).startsWith("According to") && !Character.isUpperCase(Json.str(m.get("answer")).charAt(0))) f.add("answer is not prose");
+            if (Json.str(m.get("answer")).matches("(?s)^\\d+\\..*")) f.add("answer still starts with a crawler number");
+            for (Object v : voices) if (!Json.obj(v).containsKey("source")) f.add("voice lacks its source");
             String text = Json.str(m.get("answer"));
             for (String leak : new String[] {"http", "system prompt", "api key"}) if (text.contains(leak)) f.add("answer leaked " + leak);
 
@@ -195,6 +200,10 @@ public final class ApiChecks {
         refuses(f, "crawlers above 128", Map.of("RETRIEVA_API_TOKEN", TOKEN, "RETRIEVA_MAX_CRAWLERS", "500"));
         AppConfig anon = AppConfig.from(Map.of("RETRIEVA_ALLOW_ANONYMOUS", "true", "RETRIEVA_SOURCES", "wikipedia")::get);
         eq(f, "explicit anonymous mode", true, anon.allowAnonymous());
+        eq(f, "deliberation on by default", true, c.deliberate());
+        eq(f, "default cycles", 12, c.maxCycles());
+        eq(f, "deliberation can be disabled", false, AppConfig.from(Map.of("RETRIEVA_API_TOKEN", TOKEN, "RETRIEVA_SOURCES", "wikipedia", "RETRIEVA_DELIBERATE", "false")::get).deliberate());
+        refuses(f, "cycles out of range", Map.of("RETRIEVA_API_TOKEN", TOKEN, "RETRIEVA_MAX_CYCLES", "0"));
         return f;
     }
 

@@ -66,23 +66,31 @@ public final class Agent implements AutoCloseable {
         return List.copyOf(out);
     }
 
-    /** Tunables. Defaults are the production settings. */
+    /**
+     * Tunables. {@code deliberate}: after the layered swarm resolves (or not), keep cycling through reflection rounds while they
+     * still produce new evidence, until convergence, {@code maxCycles}, or the deadline. Off by default so the engine reproduces
+     * the Python reference exactly; the server turns it on.
+     */
     public record Config(double budget, double threshold, int minSources, int[] layers, int docsPerTopic, int maxConcurrentCrawlers,
-                         DoubleSupplier clock) {
+                         DoubleSupplier clock, boolean deliberate, int maxCycles) {
         public static Config defaults() {
-            return new Config(QUICK_BUDGET, 0.60, 2, SWARM_LAYERS, 3, 128, () -> System.currentTimeMillis() / 1000.0);
+            return new Config(QUICK_BUDGET, 0.60, 2, SWARM_LAYERS, 3, 128, () -> System.currentTimeMillis() / 1000.0, false, 12);
         }
 
         public Config withBudget(double b) {
-            return new Config(b, threshold, minSources, layers, docsPerTopic, maxConcurrentCrawlers, clock);
+            return new Config(b, threshold, minSources, layers, docsPerTopic, maxConcurrentCrawlers, clock, deliberate, maxCycles);
         }
 
         public Config withMaxCrawlers(int n) {
-            return new Config(budget, threshold, minSources, layers, docsPerTopic, n, clock);
+            return new Config(budget, threshold, minSources, layers, docsPerTopic, n, clock, deliberate, maxCycles);
         }
 
         public Config withClock(DoubleSupplier c) {
-            return new Config(budget, threshold, minSources, layers, docsPerTopic, maxConcurrentCrawlers, c);
+            return new Config(budget, threshold, minSources, layers, docsPerTopic, maxConcurrentCrawlers, c, deliberate, maxCycles);
+        }
+
+        public Config withDeliberation(boolean on, int cycles) {
+            return new Config(budget, threshold, minSources, layers, docsPerTopic, maxConcurrentCrawlers, clock, on, cycles);
         }
     }
 
@@ -115,12 +123,15 @@ public final class Agent implements AutoCloseable {
         }
     }
 
-    public record Voice(int pos, String stance, String text, double weight) {}
+    /** One speaking crawler's retrieval point: the display text (audit form) plus the triple fields the prose realiser needs. */
+    public record Voice(int pos, String stance, String text, double weight, String subject, String predicate, String object, String host,
+                        String month, double trust) {}
 
-    public record Answer(String claim, String verdict, boolean resolved, Map<String, Double> shares, String prose, List<Step> route,
-                         double elapsedMs, boolean fromMemory, int rounds, Stats stats, List<Voice> voices) {}
+    public record Answer(String claim, String verdict, boolean resolved, Map<String, Double> shares, String prose, String numbered,
+                         List<Step> route, double elapsedMs, boolean fromMemory, int rounds, Stats stats, List<Voice> voices, int cycles,
+                         boolean converged) {}
 
-    public record LongAnswer(List<List<Answer>> areas, String prose, List<Voice> voices, double elapsedMs, double budget) {}
+    public record LongAnswer(List<List<Answer>> areas, String prose, String numbered, List<Voice> voices, double elapsedMs, double budget) {}
 
     // -- claims ----------------------------------------------------------------------------------------
     private static Claim claimOf(String text, Tri t) {
@@ -324,7 +335,7 @@ public final class Agent implements AutoCloseable {
             if (cur == null || v.weight() > cur.weight()) best.put(v.pos(), v);
         }
         List<Voice> voices = new ArrayList<>(best.values());
-        return new LongAnswer(answers, speak(voices), voices, (System.nanoTime() - t0) / 1e6, budget);
+        return new LongAnswer(answers, Prose.realize(voices), speak(voices), voices, (System.nanoTime() - t0) / 1e6, budget);
     }
 
     private Answer resolve(Claim claim, Memory mem, long deadline, int offset) {
@@ -340,15 +351,20 @@ public final class Agent implements AutoCloseable {
         }
         Stats stats = new Stats();
         List<Step> route;
-        int rounds = 0;
-        boolean fromMemory = false;
+        int rounds = 0, cycles = 0;
+        boolean fromMemory = false, converged = true;
         if (saved != null && resolved(tally)) {
-            fromMemory = true;
+            fromMemory = true;                    // a replayed route is already deliberated: answer instantly
             route = saved.steps;
         } else {
             Dive d = dive(claim, mem, saved, deadline, stats);
             route = d.route;
             rounds = d.rounds;
+            if (cfg.deliberate()) {
+                Reflection r = reflect(claim, mem, d.searched, deadline, stats, route);
+                cycles = r.cycles;
+                converged = r.converged;
+            }
         }
         mem.lock.lock();
         try {
@@ -366,14 +382,14 @@ public final class Agent implements AutoCloseable {
                 mem.outline.markHit(saved);
             }
             List<Voice> voices = voices(tally, route.subList(0, Math.min(cfg.layers()[0], route.size())), offset);
-            return new Answer(claim.text(), resolved ? verdict : "unresolved", resolved, tally.shares(), speak(voices), route,
-                    (System.nanoTime() - t0) / 1e6, fromMemory, rounds, stats, voices);
+            return new Answer(claim.text(), resolved ? verdict : "unresolved", resolved, tally.shares(), Prose.realize(voices), speak(voices),
+                    route, (System.nanoTime() - t0) / 1e6, fromMemory, rounds, stats, voices, cycles, converged);
         } finally {
             mem.lock.unlock();
         }
     }
 
-    private record Dive(List<Step> route, int rounds) {}
+    private record Dive(List<Step> route, int rounds, Set<String> searched) {}
 
     /** 32 crawlers -> 16 deep dives -> 8 follow-ups -> 1-4 consolidators, one layer per round. */
     private Dive dive(Claim claim, Memory mem, Route saved, long deadline, Stats stats) {
@@ -400,7 +416,68 @@ public final class Agent implements AutoCloseable {
             tally = lockedEval(claim, mem);
             if (resolved(tally)) break;
         }
-        return new Dive(route, rounds);
+        return new Dive(route, rounds, searched);
+    }
+
+    private static final long MIN_CYCLE_NANOS = 50_000_000L;
+
+    private record Reflection(int cycles, boolean converged) {}
+
+    /**
+     * The deliberation loop. Each cycle: weigh what is known, find where the case is weakest (uncorroborated evidence, the
+     * opposite side, missing context, unexplored entities), send crawlers at exactly those points, and weigh again. It ends at
+     * convergence (two consecutive cycles that add nothing and move no share by more than 0.001), when no new probe can be
+     * formed, at {@code maxCycles}, or when the deadline is too close for another cycle.
+     */
+    private Reflection reflect(Claim claim, Memory mem, Set<String> searched, long deadline, Stats stats, List<Step> route) {
+        int cycles = 0, calm = 0;
+        boolean converged = false;
+        Tally tally = lockedEval(claim, mem);
+        while (cycles < cfg.maxCycles() && deadline - System.nanoTime() > MIN_CYCLE_NANOS) {
+            List<String> topics = reflectionTopics(claim, tally, searched, cycles);
+            if (topics.isEmpty()) {
+                converged = true;
+                break;
+            }
+            searched.addAll(topics);
+            int learnedBefore = stats.newTriples;
+            route.addAll(swarm(topics, mem, deadline, stats, false));
+            Tally next = lockedEval(claim, mem);
+            cycles++;
+            double moved = 0;
+            for (String k : STANCES) moved = Math.max(moved, Math.abs(next.shares().get(k) - tally.shares().get(k)));
+            calm = stats.newTriples == learnedBefore && moved < 1e-3 ? calm + 1 : 0;
+            tally = next;
+            if (calm >= 2) {
+                converged = true;
+                break;
+            }
+        }
+        return new Reflection(cycles, converged);
+    }
+
+    /** At most 8 probes: corroborate the shakiest evidence, seek the opposite side, add context, follow new entities. */
+    private List<String> reflectionTopics(Claim claim, Tally tally, Set<String> searched, int cycle) {
+        String base = (claim.subject() + " " + claim.obj()).strip();
+        List<String> out = new ArrayList<>();
+        int probes = 0;
+        for (Evidence e : tally.evidence()) {                       // 1. uncorroborated (single-voice) evidence, strongest first
+            if (probes == 2) break;
+            if (!e.stance().equals("neutral") && e.corroboration() <= 1.0) {
+                String p = e.triple().p().startsWith("not ") ? e.triple().p().substring(4) : e.triple().p();
+                out.add(e.triple().s() + " " + p + " " + e.triple().o());
+                probes++;
+            }
+        }
+        List<String> opposite = STANCE_WORDS.get(tally.leader().equals("for") ? "against" : "for");   // 2. the side most likely to be missing
+        out.add(base + " " + opposite.get((cycle * 2) % opposite.size()));
+        out.add(base + " " + opposite.get((cycle * 2 + 1) % opposite.size()));
+        List<String> neutral = STANCE_WORDS.get("neutral");         // 3. context
+        out.add(base + " " + neutral.get(cycle % neutral.size()));
+        out.addAll(entityTopics(claim, tally, searched, 3));         // 4. entities the evidence keeps mentioning
+        List<String> uniq = new ArrayList<>();
+        for (String t : new LinkedHashSet<>(out)) if (!searched.contains(t) && uniq.size() < 8) uniq.add(t);
+        return uniq;
     }
 
     private Tally lockedEval(Claim claim, Memory mem) {
@@ -544,7 +621,8 @@ public final class Agent implements AutoCloseable {
             spoken.add(t.s() + "\u0000" + t.p() + "\u0000" + t.o());
             String pred = t.p().startsWith("not ") ? "does not " + t.p().substring(4) : (t.p().equals("is") || t.p().equals("has") ? t.p() : t.p() + "s");
             String day = MONTH.format(Instant.ofEpochSecond((long) Math.floor(t.t())));
-            out.add(new Voice(pos, best.stance(), t.s() + " " + pred + " " + t.o() + " (" + t.host() + ", " + day + ")", best.weight()));
+            out.add(new Voice(pos, best.stance(), t.s() + " " + pred + " " + t.o() + " (" + t.host() + ", " + day + ")", best.weight(),
+                    t.s(), t.p(), t.o(), t.host(), day, t.trust()));
         }
         return out;
     }

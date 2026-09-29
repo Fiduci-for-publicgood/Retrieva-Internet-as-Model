@@ -6,6 +6,7 @@ rates evidence for / against / neutral until one direction holds **60%**, and sp
 swarm of up to **128 crawlers** — crawler 1 and the primes, highest first.
 
 * **Runtime:** Maven · Apache Arrow · Tomcat 10.1 · pandas (see [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md))
+* **Cognition:** after the swarm it keeps cycling — probe the weakest point, re-weigh — until it converges or the 3 s cap, then writes the answer as prose
 * **Speed:** quick queries ≤ **3 s**; long-form (several topics) **7–15 s** across ≤ 4 areas of 32 crawlers
 * **Parsing:** nine shapes (LL, LLR, LR shift-reduce, backwards, question/answer, passive, phrase, centre-out, head) vote
 * **Safety:** allowlist + SSRF-safe fetcher, sanitizer, injection filter, triples-only boundary, fail-closed config

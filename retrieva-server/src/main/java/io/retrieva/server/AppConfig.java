@@ -14,7 +14,7 @@ import java.util.function.Function;
  */
 public record AppConfig(Path memoryDir, List<String> sources, Path corpusFile, Map<String, Double> trust, String userAgent,
                         String apiToken, boolean allowAnonymous, double quickBudgetSeconds, int maxCrawlers, int quickConcurrency,
-                        int longConcurrency, int persistSeconds, int maxQuickBody, int maxLongBody) {
+                        int longConcurrency, int persistSeconds, int maxQuickBody, int maxLongBody, boolean deliberate, int maxCycles) {
 
     public static final class ConfigException extends IllegalStateException {
         private static final long serialVersionUID = 1L;
@@ -63,7 +63,8 @@ public record AppConfig(Path memoryDir, List<String> sources, Path corpusFile, M
                 num(env, "RETRIEVA_QUICK_BUDGET_S", 3.0, 0.2, 3.0), (int) num(env, "RETRIEVA_MAX_CRAWLERS", 128, 1, 128),
                 (int) num(env, "RETRIEVA_QUICK_CONCURRENCY", 16, 1, 1000), (int) num(env, "RETRIEVA_LONG_CONCURRENCY", 2, 1, 100),
                 (int) num(env, "RETRIEVA_PERSIST_SECONDS", 10, 1, 3600), (int) num(env, "RETRIEVA_MAX_QUICK_BODY", 8 * 1024, 256, 1 << 20),
-                (int) num(env, "RETRIEVA_MAX_LONG_BODY", 64 * 1024, 256, 1 << 22));
+                (int) num(env, "RETRIEVA_MAX_LONG_BODY", 64 * 1024, 256, 1 << 22),
+                !or(env, "RETRIEVA_DELIBERATE", "true").equalsIgnoreCase("false"), (int) num(env, "RETRIEVA_MAX_CYCLES", 12, 1, 100));
     }
 
     private static String or(Function<String, String> env, String key, String dflt) {
