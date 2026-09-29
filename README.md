@@ -15,21 +15,34 @@ python -m unittest discover -s tests
 ```
 Stdlib only, Python 3.11+.
 
-## Pipeline (`ask`)
+## Modes and budgets
+| input | mode | time cap | crawlers |
+|---|---|---|---|
+| one claim / question | `ask` | **3 s** | ≤ 32 concurrent |
+| several claims spanning topics | `ask_long` | **7–15 s** (2 areas 7 s, 3 → 11 s, 4 → 15 s) | ≤ **128** = 4 areas × 32, areas concurrent, claims inside an area consecutive |
+
+The CLI picks the mode automatically. A swarm cut off by the deadline returns `unresolved` instead of overrunning.
+
+## Pipeline
 1. **Memory pass** — score the claim against stored triples. A saved route plus a resolved score answers with zero fetches.
 2. **Swarm**, one layer per round, each layer stops early if a direction reaches 60%:
-   **32** crawlers (seed queries split evenly across for/against/neutral) → **16** deep dives into entities the evidence surfaced → **8** follow-ups → **1–4** consolidators (more when the picture is murkier, aimed at the thinnest side). Every crawler is one (topic, source) job; all in a layer run concurrently under a hard deadline (default 1 s).
-3. **Verdict** — buckets for / against / neutral start with equal prior mass; each triple adds `source_trust × corroboration × recency × relevance`. Stop when one bucket ≥ 60% with ≥ 2 independent hosts, otherwise report `unresolved` (never a forced answer).
+   **32** crawlers (seed queries split evenly across for/against/neutral) → **16** deep dives into entities the evidence surfaced → **8** follow-ups → **1–4** consolidators (more when the picture is murkier, aimed at the thinnest side). Every crawler is one (topic, source) job.
+3. **Verdict** — buckets for / against / neutral start with equal prior mass; each triple adds `source_trust × corroboration × recency × relevance`. Stop when one bucket ≥ 60% with ≥ 2 independent hosts, otherwise `unresolved` (never forced).
    - *recency*: half-life 365 days from when the source was added.
    - *corroboration* = synonymous vs antonymous statements about the same topic from **other** hosts. A host gets one voice per topic.
-4. **Prose** — templated from triples, never from source text. It speaks from the best retrieval point of layer-1 crawlers at prime positions 1, 2, 3, 5, 7, 11, 13, 17, 19, 23, 29, 31, **in reverse** (31 → 1); a prime crawler with no result is skipped, and a fact already spoken isn't repeated. Positions are fixed and saved in the outline, so a replayed route speaks the same way.
-5. **Persist** — triples and routes written back (evicting lowest trust×recency×usage; oldest/least-used routes).
+4. **The answer is only the prime voices.** Crawlers are numbered 1..128 (area *k* owns 32(*k*−1)+1 … 32*k*). The entire answer is the best retrieval point of crawlers **1 and the primes ≤ 127**, spoken from the highest number down to 1, composed from triples (never source text). A prime crawler with no result is skipped; a fact already spoken is not repeated. Verdict and shares are in structured fields, not prose.
+5. **Persist** — triples and routes written back (evicting lowest trust×recency×usage; oldest/least-used routes). Layer-1 positions are saved so replayed routes speak identically.
+
+## Parse shapes (`retrieva/parsers.py`)
+Sentences are read by nine parsers and an ensemble votes (`python -m retrieva.parsers "sentence"` shows each):
+`ll` left-to-right leftmost · `llr` LL with right-context lookahead (noun-vs-verb) · `lr` shift-reduce (coordinated VPs, relative clauses) · `rl` backwards, right-to-left with subject inheritance · `qar` question→claim and question+answer pairs · `passive` · `pattern` phrases ("leads to", "is good for") · `center` · `head`.
+Readings are clustered and vote-counted; a reading is dropped when a better-voted parser contradicts its polarity. "LLR" and "QAR" are my interpretation of those names (see the module docstring); rename or re-scope as you intended.
 
 ## Injection defence (the restricted ingestion line)
 allowlist gate (unknown hosts rejected) → size caps → strip HTML/scripts/URLs/markdown/invisible+bidi chars → sentence-level directive/injection filter → triple extraction → strict charset validation (`[a-z0-9' -]`, no punctuation, so payloads can't survive) → store. Files read back from disk are re-validated when first touched. Only triples cross the boundary.
 
 ## Honest limits
-- **"Whole internet in microseconds" is not physically possible.** What is fast: memory lookups (~50 ms over a full 8 MB store ≈ 200k triples, cold load ≈ 0.35 s). Live fetches are bounded by network latency and the deadline; an unfinished swarm returns `unresolved` rather than overrunning. Wikipedia is blocked by this sandbox's proxy, so `WikipediaSource` is **untested live**; the swarm is tested against the offline corpus and a slow-source deadline test.
+- **"Whole internet in microseconds" is not physically possible.** What is fast: memory lookups (~50 ms over a full 8 MB store ≈ 200k triples, cold load ≈ 0.35 s). Live fetches are bounded by network latency and the deadline (3 s quick, 7–15 s long); an unfinished swarm returns `unresolved` rather than overrunning. Wikipedia is blocked by this sandbox's proxy, so `WikipediaSource` is **untested live**; the swarm is tested against the offline corpus and a slow-source deadline test.
 - "Synonym/antonym" understanding is a small hand-written lexicon (`lexicon.py`) and rule-based extraction, not a language model. It handles negation ("does not improve", "no evidence that…") but misses paraphrase and most nuance. Extend the lexicon, or swap `extract.py` for an NLP/LLM extractor behind the same interface.
 - Sentence filtering cannot stop a malicious page on an allowlisted host from stating *false facts*; trust weights and cross-host corroboration are the mitigation.
 - Sources are pluggable (`search(query, limit) -> [Doc]`); add real crawlers there.

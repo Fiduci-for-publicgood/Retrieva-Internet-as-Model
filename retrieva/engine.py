@@ -6,22 +6,25 @@ ask(claim):
                       deadline; seeds split evenly across for/against/neutral, later layers follow
                       entities the evidence surfaced (intelligent deviation)
   3. stop           - as soon as one direction holds >= 60% of the weighted evidence
-  4. prose          - composed from triples with templates; source text is never re-read
+  4. prose          - the ENTIRE answer is the retrieval points of crawlers 1 and the primes up to 128,\n                      spoken from highest number to 1; composed from triples, never from source text
   5. persist        - triples (<= 8 MB) and the route outline (<= 2 MB) are written back
 """
 from __future__ import annotations
 
 import os
+import threading
 import time
+from contextlib import nullcontext
 from collections import Counter, defaultdict
 from concurrent.futures import ThreadPoolExecutor, wait
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 
-from .extract import content, extract, polarity, tokens
+from .extract import content, polarity
+from .parsers import extract_all
 from .ingest import Gate, IngestStats, ingest
 from .outline import Outline, Route, route_key
-from .sanitize import clean
+from .sanitize import clean, sentences
 from .sources import Source
 from .store import MB, TripleStore, recency
 
@@ -32,7 +35,16 @@ STANCE_WORDS = {
     "against": ["risks", "criticism", "no evidence", "myth", "harms", "debunked", "side effects", "limitations", "negative effect", "contradicts"],
     "neutral": ["overview", "study", "review", "definition", "history", "effect", "meta-analysis", "context", "research", "explained"],
 }
-PRIME_VOICES = (1, 2, 3, 5, 7, 11, 13, 17, 19, 23, 29, 31)   # layer-1 crawler positions that speak, in reverse
+def _primes(n: int) -> tuple:
+    return tuple(i for i in range(2, n + 1) if all(i % d for d in range(2, int(i ** 0.5) + 1)))
+
+
+# Crawlers are numbered 1..128 (area k owns 32(k-1)+1 .. 32k). Only 1 and the primes speak; the whole
+# answer is their retrieval points, read from the highest number down to 1.
+PRIME_VOICES = (1,) + _primes(128)
+QUICK_BUDGET = 3.0                # seconds, hard cap for a single-claim query
+LONG_BUDGET = (7.0, 15.0)         # seconds, 2 areas -> 7 s ... 4 areas -> 15 s
+MAX_AREAS = 4                     # 4 areas x 32 layer-1 crawlers = 128 crawlers at most
 SWARM_LAYERS = (32, 16, 8, 4)   # crawlers per layer; the last layer runs 1-4 consolidators
 
 
@@ -56,8 +68,8 @@ class Claim:
 
 
 def parse_claim(text: str) -> Claim:
-    for sent in clean(text).split("\n"):
-        for s, p, o in extract(sent):
+    for sent in sentences(text)[0]:
+        for s, p, o in extract_all(sent):
             return Claim(text.strip(), s, p, o, content(s), content(o), polarity(p, o))
     raise ClaimError("could not parse a 'subject predicate object' claim, e.g. 'coffee improves memory'")
 
@@ -96,11 +108,50 @@ class Answer:
     from_memory: bool
     rounds: int
     stats: IngestStats = field(default_factory=IngestStats)
+    voices: list = field(default_factory=list)   # (crawler number, stance, sentence, weight)
+
+
+@dataclass
+class LongAnswer:
+    areas: list           # list[list[Answer]], one list per area, claims in resolve order
+    prose: str
+    elapsed_ms: float
+    budget: float
+
+
+def parse_claims(text: str) -> list[Claim]:
+    out = []
+    for sent in sentences(text)[0]:     # user input is untrusted too: same filter as crawled text
+        for s, p, o in extract_all(sent)[:1]:      # best-voted reading per sentence
+            out.append(Claim(sent.strip(), s, p, o, content(s), content(o), polarity(p, o)))
+    if not out:
+        raise ClaimError("no 'subject predicate object' claims found in the input")
+    return out
+
+
+def group_areas(claims: list[Claim], max_areas: int = MAX_AREAS) -> list[list[Claim]]:
+    """Cluster claims that share topic stems; if more than max_areas remain, merge the smallest into the
+    most-overlapping area."""
+    groups: list[list[Claim]] = []
+    for c in claims:
+        for g in groups:
+            if any(c.s & (x.s | x.o) or x.s & (c.s | c.o) for x in g):
+                g.append(c)
+                break
+        else:
+            groups.append([c])
+    while len(groups) > max_areas:
+        groups.sort(key=len)
+        small = groups.pop(0)
+        stems = set().union(*(c.s | c.o for c in small))
+        best = max(groups, key=lambda g: len(stems & set().union(*(c.s | c.o for c in g))))
+        best.extend(small)
+    return groups
 
 
 class Agent:
     def __init__(self, sources: list[Source], gate: Gate, memory_dir: str | None = None, *,
-                 budget: float = 1.0, threshold: float = 0.60, min_sources: int = 2,
+                 budget: float = QUICK_BUDGET, threshold: float = 0.60, min_sources: int = 2,
                  layers: tuple = SWARM_LAYERS, docs_per_topic: int = 3,
                  store_cap: int = 8 * MB, outline_cap: int = 2 * MB, clock=time.time):
         self.sources, self.gate, self.dir = sources, gate, memory_dir
@@ -163,43 +214,88 @@ class Agent:
 
     # -- main loop --------------------------------------------------------------------------
     def ask(self, text: str) -> Answer:
-        t0 = time.perf_counter()
-        deadline = t0 + self.budget
+        """Quick query: one claim, one 32-16-8-1..4 resolve, hard cap `budget` (default 3 s)."""
+        deadline = time.perf_counter() + self.budget
         claim = parse_claim(text)
         store, outline = self._open()
-        tally = self.evaluate(claim, store)
-        saved = outline.lookup(claim.key)
-        stats, route, rounds, from_memory = IngestStats(), [], 0, False
+        ans, dirty = self._resolve(claim, store, outline, deadline, nullcontext(), 0)
+        if dirty:
+            self._persist(store, outline)
+        return ans
 
+    def ask_long(self, text: str) -> "LongAnswer":
+        """Long-form input spanning many topics: split into <= 4 areas that resolve concurrently
+        (<= 128 crawlers); claims inside an area resolve consecutively. Budget 7-15 s by area count."""
+        t0 = time.perf_counter()
+        claims = parse_claims(text)
+        areas = group_areas(claims, MAX_AREAS)
+        budget = self.long_budget(len(areas))
+        deadline = t0 + budget
+        store, outline = self._open()
+        lock = threading.RLock()
+
+        def run_area(idx_group):
+            idx, group = idx_group
+            out, dirty = [], False
+            for c in group:                              # consecutive resolves within an area
+                a, d = self._resolve(c, store, outline, deadline, lock, idx * self.layers[0])
+                out.append(a)
+                dirty |= d
+            return out, dirty
+
+        with ThreadPoolExecutor(max_workers=len(areas)) as ex:   # areas run asynchronously
+            results = list(ex.map(run_area, enumerate(areas)))
+        elapsed = (time.perf_counter() - t0) * 1000
+        if any(d for _, d in results):
+            self._persist(store, outline)
+        area_answers = [r for r, _ in results]
+        best: dict[int, tuple] = {}                       # crawler number -> strongest voice
+        for ans in area_answers:
+            for a in ans:
+                for v in a.voices:
+                    if v[0] not in best or v[3] > best[v[0]][3]:
+                        best[v[0]] = v
+        return LongAnswer(area_answers, speak(list(best.values())), elapsed, budget)
+
+    @staticmethod
+    def long_budget(n_areas: int) -> float:
+        lo, hi = LONG_BUDGET
+        return lo + (hi - lo) * (max(2, n_areas) - 2) / (MAX_AREAS - 2)
+
+    def _resolve(self, claim, store, outline, deadline, lock, offset) -> tuple[Answer, bool]:
+        t0 = time.perf_counter()
+        with lock:
+            tally = self.evaluate(claim, store)
+            saved = outline.lookup(claim.key)
+        stats, route, rounds, from_memory = IngestStats(), [], 0, False
         if saved and self._resolved(tally):
             from_memory, route = True, saved.steps
         else:
-            route, rounds = self._dive(claim, store, outline, saved, deadline, stats)
+            route, rounds = self._dive(claim, store, outline, saved, deadline, stats, lock)
+        with lock:
             tally = self.evaluate(claim, store)
+            verdict, share = tally.leader
+            resolved = self._resolved(tally)
+            store.touch(e.row for e in tally.evidence[:12])
+            route_saved = resolved and not from_memory
+            if route_saved:
+                outline.save_route(Route(claim.key, verdict, (tally.shares["for"], tally.shares["against"],
+                                                               tally.shares["neutral"]), int(self.clock()), 0, route))
+            elif resolved and saved:
+                saved.hits += 1
+            voices = self._voices(tally, route[:self.layers[0]], offset)
+            dirty = store.dirty or route_saved or not from_memory
+        return Answer(claim.text, verdict if resolved else "unresolved", resolved, tally.shares, speak(voices), route,
+                      (time.perf_counter() - t0) * 1000, from_memory, rounds, stats, voices), dirty
 
-        verdict, share = tally.leader
-        resolved = self._resolved(tally)
-        store.touch(e.row for e in tally.evidence[:12])
-        route_saved = resolved and not from_memory
-        if route_saved:
-            outline.save_route(Route(claim.key, verdict, (tally.shares["for"], tally.shares["against"],
-                                                           tally.shares["neutral"]), int(self.clock()), 0, route))
-        elif resolved and saved:
-            saved.hits += 1
-        prose = self._prose(claim, tally, resolved, route[:self.layers[0]])
-        elapsed = (time.perf_counter() - t0) * 1000   # answer latency; persisting happens after the clock stops
-        if store.dirty or route_saved or not from_memory:
-            self._persist(store, outline)
-        return Answer(text, verdict if resolved else "unresolved", resolved, tally.shares, prose, route,
-                      elapsed, from_memory, rounds, stats)
-
-    def _dive(self, claim, store, outline, saved, deadline, stats):
+    def _dive(self, claim, store, outline, saved, deadline, stats, lock):
         """Swarm: 32 crawlers -> 16 deep dives -> 8 follow-ups -> 1-4 consolidators, one layer per round.
         Each layer ends early if a direction already holds the threshold; the deadline cuts any layer short."""
         searched, route, rounds = set(), [], 0
         pool = ThreadPoolExecutor(max_workers=max(self.layers))
         try:
-            tally = self.evaluate(claim, store)
+            with lock:
+                tally = self.evaluate(claim, store)
             for layer, size in enumerate(self.layers):
                 if time.perf_counter() >= deadline:
                     break
@@ -214,18 +310,19 @@ class Agent:
                     continue
                 rounds += 1
                 searched.update(topics)
-                steps = self._swarm(topics, store, outline, deadline, stats, pool, keep_empty=layer == 0)
+                steps = self._swarm(topics, store, outline, deadline, stats, pool, lock, keep_empty=layer == 0)
                 if layer == 0:
                     steps += [("-", [])] * (size - len(steps))   # positions 1..32 are fixed
                 route += steps
-                tally = self.evaluate(claim, store)
+                with lock:
+                    tally = self.evaluate(claim, store)
                 if self._resolved(tally):
                     break
         finally:
             pool.shutdown(wait=False, cancel_futures=True)
         return route, rounds
 
-    def _swarm(self, topics, store, outline, deadline, stats, pool, keep_empty=False):
+    def _swarm(self, topics, store, outline, deadline, stats, pool, lock, keep_empty=False):
         """One crawler per (topic, source), all concurrent; results ingested through the gate."""
         futs = {pool.submit(src.search, t, self.docs_per_topic + min(outline.frequency(t), 5)): t
                 for t in topics for src in self.sources}
@@ -237,14 +334,15 @@ class Agent:
             except Exception:
                 pass  # a dead crawler must never sink the answer
         steps = []
-        for t in topics:
-            outline.record_topic(t)
-            s = IngestStats()
-            ingest(by_topic[t], self.gate, store, s)
-            for k in ("docs", "rejected_docs", "dropped_injection", "triples", "new_triples"):
-                setattr(stats, k, getattr(stats, k) + getattr(s, k))
-            if s.locators or keep_empty:
-                steps.append((t, s.locators))
+        with lock:
+            for t in topics:
+                outline.record_topic(t)
+                s = IngestStats()
+                ingest(by_topic[t], self.gate, store, s)
+                for k in ("docs", "rejected_docs", "dropped_injection", "triples", "new_triples"):
+                    setattr(stats, k, getattr(stats, k) + getattr(s, k))
+                if s.locators or keep_empty:
+                    steps.append((t, s.locators))
         return steps
 
     @staticmethod
@@ -280,23 +378,17 @@ class Agent:
 
     # -- prose ------------------------------------------------------------------------------
     @staticmethod
-    def _prose(claim: Claim, tally: Tally, resolved: bool, layer1: list) -> str:
-        """Speak from the best retrieval point of the prime-numbered layer-1 crawlers, last to first."""
-        f, a, n = (tally.shares[k] for k in ("for", "against", "neutral"))
-        lead, share = tally.leader
-        head = (f"{lead.capitalize()}: {share:.0%} of weighted evidence." if resolved else
-                f"Unresolved: leading direction '{lead}' at {share:.0%}, below the threshold.")
-        lines = [f"{head} Claim: \"{claim.text}\". for {f:.0%} / against {a:.0%} / neutral {n:.0%} "
-                 f"({tally.sources} sources)."]
+    def _voices(tally: Tally, layer1: list, offset: int) -> list:
+        """Best retrieval point of each speaking (1 / prime) crawler in this claim's layer 1."""
         by_src: dict[str, list] = defaultdict(list)
         for ev in tally.evidence:
             by_src[ev.triple.src].append(ev)
-        spoken = set()
+        out, spoken = [], set()
         for pos in reversed(PRIME_VOICES):
-            if pos > len(layer1):
+            n = pos - offset
+            if not 1 <= n <= len(layer1):
                 continue
-            _, links = layer1[pos - 1]
-            cands = [ev for lk in links for ev in by_src.get(lk, []) if ev.triple[:3] not in spoken]
+            cands = [ev for lk in layer1[n - 1][1] for ev in by_src.get(lk, []) if ev.triple[:3] not in spoken]
             if not cands:
                 continue
             ev = max(cands, key=lambda x: x.weight)
@@ -304,5 +396,12 @@ class Agent:
             spoken.add(t[:3])
             pred = ("does not " + t.p[4:]) if t.p.startswith("not ") else (t.p if t.p in ("is", "has") else t.p + "s")
             day = datetime.fromtimestamp(t.t, timezone.utc).strftime("%Y-%m")
-            lines.append(f"{pos}. [{ev.stance}] {t.s} {pred} {t.o} ({t.src.split('/')[0]}, {day}, weight {ev.weight:.2f})")
-        return "\n".join(lines)
+            out.append((pos, ev.stance, f"{t.s} {pred} {t.o} ({t.src.split('/')[0]}, {day})", ev.weight))
+        return out
+
+
+def speak(voices: list) -> str:
+    """The entire answer: prime-numbered crawlers' points, highest number first."""
+    if not voices:
+        return "No prime-numbered crawler retrieved evidence."
+    return "\n".join(f"{p}. [{st}] {txt}" for p, st, txt, _ in sorted(voices, reverse=True))

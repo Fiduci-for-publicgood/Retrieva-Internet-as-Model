@@ -4,7 +4,7 @@ import argparse
 import json
 import sys
 
-from .engine import Agent, ClaimError
+from .engine import Agent, ClaimError, group_areas, parse_claims
 from .ingest import Gate
 from .sources import CorpusSource, WikipediaSource, load_trust_env
 
@@ -15,7 +15,7 @@ def main(argv=None) -> int:
     ap.add_argument("--corpus", help="offline JSON corpus (see examples/corpus.json)")
     ap.add_argument("--live", action="store_true", help="also query Wikipedia (trust 0.7)")
     ap.add_argument("--memory", default=".retrieva", help="directory for triples.bin + outline.md")
-    ap.add_argument("--budget", type=float, default=1.0, help="deadline in seconds (default 1.0)")
+    ap.add_argument("--budget", type=float, default=3.0, help="quick-query cap in seconds (default 3.0); long-form input gets 7-15 s by area count")
     ap.add_argument("--threshold", type=float, default=0.60)
     ap.add_argument("--json", action="store_true")
     a = ap.parse_args(argv)
@@ -32,6 +32,12 @@ def main(argv=None) -> int:
     trust.update(load_trust_env())
     agent = Agent(sources, Gate(trust), a.memory, budget=a.budget, threshold=a.threshold)
     try:
+        areas = group_areas(parse_claims(a.claim))
+        if len(areas) > 1 or sum(map(len, areas)) > 1:      # multi-topic input -> long-form mode
+            ans = agent.ask_long(a.claim)
+            print(ans.prose)
+            print(f"\n[long-form: {len(ans.areas)} areas | {ans.elapsed_ms / 1000:.2f}s of {ans.budget:.0f}s budget]")
+            return 0
         ans = agent.ask(a.claim)
     except ClaimError as e:
         print(f"error: {e}", file=sys.stderr)

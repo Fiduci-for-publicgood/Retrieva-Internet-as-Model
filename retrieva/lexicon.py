@@ -46,7 +46,7 @@ AUX = {"does", "do", "did", "can", "may", "might", "will", "could", "would", "sh
 STOP = {"the", "a", "an", "this", "that", "these", "those", "some", "many", "most", "any", "all",
         "of", "to", "in", "on", "at", "by", "for", "with", "from", "as", "it", "its", "their",
         "his", "her", "our", "your", "my", "there", "here", "then", "than", "so", "such", "very",
-        "more", "less", "much", "recent", "new", "studies", "study", "research", "evidence",
+        "more", "less", "much", "why", "how", "recent", "new", "studies", "study", "research", "evidence",
         "found", "shows", "show", "showed", "suggest", "suggests", "reports", "report"}
 BREAKS = {"and", "but", "because", "while", "which", "although", "when", "or", "whereas",
           "since", "though", "however", "if", "unless", "whether"}

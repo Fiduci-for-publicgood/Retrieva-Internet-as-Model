@@ -7,10 +7,10 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 
-from .extract import extract
+from .parsers import extract_all, qa_triples
 from .sources import Doc
 from .store import TripleStore
-from .sanitize import sentences
+from .sanitize import clean, sentences
 
 MAX_DOC_BYTES = 256 * 1024
 MAX_TRIPLES_PER_DOC = 200
@@ -54,12 +54,9 @@ def ingest(docs: list[Doc], gate: Gate, store: TripleStore, stats: IngestStats |
         st.dropped_injection += dropped
         st.docs += 1
         st.locators.append(doc.locator)
-        n = 0
-        for sent in sents:
-            for s, p, o in extract(sent):
-                st.triples += 1
-                st.new_triples += store.add(s, p, o, doc.locator, doc.added, trust)
-                n += 1
-            if n >= MAX_TRIPLES_PER_DOC:
-                break
+        found = [t for sent in sents for t in extract_all(sent)]        # every parse shape, voted
+        found += qa_triples(clean(doc.text))                          # "Does X improve Y? No."
+        for s, p, o in found[:MAX_TRIPLES_PER_DOC]:
+            st.triples += 1
+            st.new_triples += store.add(s, p, o, doc.locator, doc.added, trust)
     return st

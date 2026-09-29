@@ -60,6 +60,46 @@
    "locator": "health.example.gov/alertness",
    "added": "2025-05-01",
    "text": "Caffeine does not reduce alertness. Caffeine stimulates alertness."
+  },
+  {
+   "locator": "journal.example.org/tea",
+   "added": "2025-07-01",
+   "text": "Tea improves focus. Tea improves focus in adults."
+  },
+  {
+   "locator": "health.example.gov/tea",
+   "added": "2025-07-01",
+   "text": "Tea improves focus. Tea improves focus in adults."
+  },
+  {
+   "locator": "journal.example.org/exercise",
+   "added": "2025-07-01",
+   "text": "Exercise improves mood. Exercise improves mood in adults."
+  },
+  {
+   "locator": "health.example.gov/exercise",
+   "added": "2025-07-01",
+   "text": "Exercise improves mood. Exercise improves mood in adults."
+  },
+  {
+   "locator": "journal.example.org/sleep",
+   "added": "2025-07-01",
+   "text": "Sleep improves memory. Sleep improves memory in adults."
+  },
+  {
+   "locator": "health.example.gov/sleep",
+   "added": "2025-07-01",
+   "text": "Sleep improves memory. Sleep improves memory in adults."
+  },
+  {
+   "locator": "journal.example.org/sugar",
+   "added": "2025-07-01",
+   "text": "Sugar harms teeth. Sugar harms teeth in adults."
+  },
+  {
+   "locator": "health.example.gov/sugar",
+   "added": "2025-07-01",
+   "text": "Sugar harms teeth. Sugar harms teeth in adults."
   }
  ]
 }
