@@ -32,6 +32,7 @@ STANCE_WORDS = {
     "against": ["risks", "criticism", "no evidence", "myth", "harms", "debunked", "side effects", "limitations", "negative effect", "contradicts"],
     "neutral": ["overview", "study", "review", "definition", "history", "effect", "meta-analysis", "context", "research", "explained"],
 }
+PRIME_VOICES = (1, 2, 3, 5, 7, 11, 13, 17, 19, 23, 29, 31)   # layer-1 crawler positions that speak, in reverse
 SWARM_LAYERS = (32, 16, 8, 4)   # crawlers per layer; the last layer runs 1-4 consolidators
 
 
@@ -185,7 +186,7 @@ class Agent:
                                                            tally.shares["neutral"]), int(self.clock()), 0, route))
         elif resolved and saved:
             saved.hits += 1
-        prose = self._prose(claim, tally, resolved, self.clock())
+        prose = self._prose(claim, tally, resolved, route[:self.layers[0]])
         elapsed = (time.perf_counter() - t0) * 1000   # answer latency; persisting happens after the clock stops
         if store.dirty or route_saved or not from_memory:
             self._persist(store, outline)
@@ -213,7 +214,10 @@ class Agent:
                     continue
                 rounds += 1
                 searched.update(topics)
-                route += self._swarm(topics, store, outline, deadline, stats, pool)
+                steps = self._swarm(topics, store, outline, deadline, stats, pool, keep_empty=layer == 0)
+                if layer == 0:
+                    steps += [("-", [])] * (size - len(steps))   # positions 1..32 are fixed
+                route += steps
                 tally = self.evaluate(claim, store)
                 if self._resolved(tally):
                     break
@@ -221,7 +225,7 @@ class Agent:
             pool.shutdown(wait=False, cancel_futures=True)
         return route, rounds
 
-    def _swarm(self, topics, store, outline, deadline, stats, pool):
+    def _swarm(self, topics, store, outline, deadline, stats, pool, keep_empty=False):
         """One crawler per (topic, source), all concurrent; results ingested through the gate."""
         futs = {pool.submit(src.search, t, self.docs_per_topic + min(outline.frequency(t), 5)): t
                 for t in topics for src in self.sources}
@@ -239,7 +243,7 @@ class Agent:
             ingest(by_topic[t], self.gate, store, s)
             for k in ("docs", "rejected_docs", "dropped_injection", "triples", "new_triples"):
                 setattr(stats, k, getattr(stats, k) + getattr(s, k))
-            if s.locators:
+            if s.locators or keep_empty:
                 steps.append((t, s.locators))
         return steps
 
@@ -247,8 +251,7 @@ class Agent:
     def _seed_topics(claim, saved, size):
         """Layer 1: base + facets, then query variants split evenly across for / against / neutral."""
         base = f"{claim.subject} {claim.obj}".strip()
-        seeds = [t for t, _ in saved.steps] if saved else []
-        seeds += [base, claim.subject, claim.obj]
+        seeds = [base, claim.subject, claim.obj]
         lanes = [[f"{base} {w}" for w in words] for words in STANCE_WORDS.values()]
         for i in range(max(map(len, lanes))):          # round-robin: equal parts per direction
             seeds += [ln[i] for ln in lanes if i < len(ln)]
@@ -277,17 +280,29 @@ class Agent:
 
     # -- prose ------------------------------------------------------------------------------
     @staticmethod
-    def _prose(claim: Claim, tally: Tally, resolved: bool, now: float) -> str:
+    def _prose(claim: Claim, tally: Tally, resolved: bool, layer1: list) -> str:
+        """Speak from the best retrieval point of the prime-numbered layer-1 crawlers, last to first."""
         f, a, n = (tally.shares[k] for k in ("for", "against", "neutral"))
         lead, share = tally.leader
         head = (f"{lead.capitalize()}: {share:.0%} of weighted evidence." if resolved else
                 f"Unresolved: leading direction '{lead}' at {share:.0%}, below the threshold.")
         lines = [f"{head} Claim: \"{claim.text}\". for {f:.0%} / against {a:.0%} / neutral {n:.0%} "
                  f"({tally.sources} sources)."]
-        for stance in ("for", "against", "neutral"):
-            for e in [x for x in tally.evidence if x.stance == stance][:2]:
-                t = e.triple
-                day = datetime.fromtimestamp(t.t, timezone.utc).strftime("%Y-%m")
-                pred = t.p.replace("not ", "does not ") if t.p.startswith("not ") else t.p + "s" if t.p not in ("is", "has") else t.p
-                lines.append(f"- [{stance}] {t.s} {pred} {t.o} ({t.src.split('/')[0]}, {day}, weight {e.weight:.2f})")
+        by_src: dict[str, list] = defaultdict(list)
+        for ev in tally.evidence:
+            by_src[ev.triple.src].append(ev)
+        spoken = set()
+        for pos in reversed(PRIME_VOICES):
+            if pos > len(layer1):
+                continue
+            _, links = layer1[pos - 1]
+            cands = [ev for lk in links for ev in by_src.get(lk, []) if ev.triple[:3] not in spoken]
+            if not cands:
+                continue
+            ev = max(cands, key=lambda x: x.weight)
+            t = ev.triple
+            spoken.add(t[:3])
+            pred = ("does not " + t.p[4:]) if t.p.startswith("not ") else (t.p if t.p in ("is", "has") else t.p + "s")
+            day = datetime.fromtimestamp(t.t, timezone.utc).strftime("%Y-%m")
+            lines.append(f"{pos}. [{ev.stance}] {t.s} {pred} {t.o} ({t.src.split('/')[0]}, {day}, weight {ev.weight:.2f})")
         return "\n".join(lines)

@@ -22,7 +22,7 @@ Stdlib only, Python 3.11+.
 3. **Verdict** — buckets for / against / neutral start with equal prior mass; each triple adds `source_trust × corroboration × recency × relevance`. Stop when one bucket ≥ 60% with ≥ 2 independent hosts, otherwise report `unresolved` (never a forced answer).
    - *recency*: half-life 365 days from when the source was added.
    - *corroboration* = synonymous vs antonymous statements about the same topic from **other** hosts. A host gets one voice per topic.
-4. **Prose** — templated from triples. Source text is never re-read or given to a model.
+4. **Prose** — templated from triples, never from source text. It speaks from the best retrieval point of layer-1 crawlers at prime positions 1, 2, 3, 5, 7, 11, 13, 17, 19, 23, 29, 31, **in reverse** (31 → 1); a prime crawler with no result is skipped, and a fact already spoken isn't repeated. Positions are fixed and saved in the outline, so a replayed route speaks the same way.
 5. **Persist** — triples and routes written back (evicting lowest trust×recency×usage; oldest/least-used routes).
 
 ## Injection defence (the restricted ingestion line)

@@ -1,4 +1,5 @@
 import os
+import re
 import tempfile
 import time
 import unittest
@@ -161,6 +162,17 @@ class Engine(unittest.TestCase):
         against = [q for q in seen if any(w in q for w in ("risks", "myth", "debunked"))]
         forr = [q for q in seen if any(w in q for w in ("benefits", "supports", "confirmed"))]
         self.assertEqual(len(against), len(forr))
+
+    def test_answer_speaks_from_prime_crawlers_in_reverse(self):
+        with tempfile.TemporaryDirectory() as d:
+            for from_memory in (False, True):        # second pass replays the saved route
+                ag, _ = agent(d)
+                ans = ag.ask("caffeine enhances alertness")
+                self.assertEqual(ans.from_memory, from_memory)
+                pos = [int(m) for m in re.findall(r"^(\d+)\. \[", ans.prose, re.M)]
+                self.assertTrue(pos)
+                self.assertEqual(pos, sorted(pos, reverse=True))
+                self.assertTrue(set(pos) <= {1, 2, 3, 5, 7, 11, 13, 17, 19, 23, 29, 31})
 
     def test_unparseable_claim(self):
         with self.assertRaises(ClaimError):

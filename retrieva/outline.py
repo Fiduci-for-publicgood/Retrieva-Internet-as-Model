@@ -10,7 +10,7 @@ Format (plain indented text, human-editable):
     - coffee memory :: 3
     ## routes
     - [1] coffee memory :: verdict=for for=0.71 against=0.12 neutral=0.17 t=1727600000 hits=2
-      - 1. coffee memory
+      - 1. coffee memory   (step number = layer-1 crawler position for the first 32 steps; '-' = no result)
         - journal.example.org/coffee-and-memory
 """
 from __future__ import annotations
