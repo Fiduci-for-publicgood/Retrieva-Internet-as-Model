@@ -75,13 +75,18 @@ Errors: 400 bad body · 401 · 405 · 413 body too large · 422 no parseable cla
 `RETRIEVA_API_TOKEN` (≥ 16 chars) · `RETRIEVA_SOURCES` (`wikipedia,arxiv`, or `none`) · `RETRIEVA_CORPUS_FILE` (offline JSON corpus) · `RETRIEVA_TRUST` (`host=0.8,...`) · `RETRIEVA_USER_AGENT` (identify yourself; include a contact) · `RETRIEVA_MEMORY_DIR` · `RETRIEVA_QUICK_BUDGET_S` (≤ 3) · `RETRIEVA_MAX_CRAWLERS` (≤ 128) · `RETRIEVA_QUICK_CONCURRENCY` · `RETRIEVA_LONG_CONCURRENCY` · `RETRIEVA_PERSIST_SECONDS` · `RETRIEVA_MAX_QUICK_BODY` · `RETRIEVA_MAX_LONG_BODY`.
 
 ## How this is verified
-| layer | how | where it ran |
+CI run 2 (commit `da4ac1f`): all four jobs green.
+
+| layer | how | status |
 |---|---|---|
-| core (parsers, sanitizer, store, outline, engine, sources policy) | 11 checks incl. **golden-vector parity with the Python reference** (parser readings, ensemble, verdicts, shares, voices, weights, routes, ingestion stats) | compiled with `javac` and run during development; also `mvn verify` in CI |
-| `ApiHandler` / `AppConfig` | 5 checks (auth, validation, quick + long, 429 admission, config fail-closed) | same |
-| Arrow persistence, Tomcat wiring (`ApiServlet`, `AppListener`), end-to-end restart test | JUnit + embedded Tomcat | **CI only** — the development sandbox could not download Arrow/Tomcat/Pandas |
-| pandas sidecar, Java→Python Arrow contract | pytest reading a directory written by the Java code | **CI only** |
-| live Wikipedia/arXiv crawling | response parsers tested on hand-written fixtures shaped per the public API docs; the network path itself is untested | not run anywhere yet |
+| core (parsers, sanitizer, store, outline, engine, source policy) | 11 checks incl. **golden-vector parity with the Python reference** (parser readings, ensemble, verdicts, shares, voices, weights, routes, ingestion stats) | passed locally and in CI (`mvn verify`) |
+| `ApiHandler` / `AppConfig` | 5 checks: auth, validation, quick + long, 429 admission, config fails closed | passed locally and in CI |
+| Arrow persistence | round trip, generation pruning, damaged-newest fallback, crashed-save leftovers, hostile rows | passed in CI |
+| Tomcat wiring | embedded Tomcat: real listener + servlet, HTTP calls, refusal to start without a token, restart with the route replayed from persisted memory | passed in CI (after one test-assertion fix) |
+| pandas sidecar | 9 pytest checks incl. **reading a memory directory written by the Java code** | passed in CI, 0 skipped |
+| Docker image | `docker build` | builds in CI; the container has **not** been started or health-checked |
+| live Wikipedia / arXiv crawling | response parsers tested on hand-written fixtures shaped per the public API docs | **the network path has never been run** in CI or the dev sandbox |
+| answer quality on real questions | — | **not measured.** Verdicts come from a small hand-written lexicon and rule-based parsers; there is no benchmark against real queries |
 
 ## Operations
 * `docker compose up` (see `docker-compose.yml`); the WAR is `ROOT.war`. Give the JVM `--add-opens=java.base/java.nio=ALL-UNNAMED` (Arrow) — the image sets it.
