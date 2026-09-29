@@ -12,7 +12,8 @@ COPY retrieva-server retrieva-server
 RUN --mount=type=cache,target=/root/.m2 mvn -B -q -DskipTests package
 
 FROM tomcat:10.1-jre21-temurin
-RUN rm -rf /usr/local/tomcat/webapps/* \
+RUN apt-get update && apt-get install -y --no-install-recommends curl && rm -rf /var/lib/apt/lists/* \
+ && rm -rf /usr/local/tomcat/webapps/* \
  && groupadd --system retrieva && useradd --system --gid retrieva --home-dir /nonexistent --shell /usr/sbin/nologin retrieva \
  && mkdir -p /var/lib/retrieva && chown retrieva:retrieva /var/lib/retrieva \
  && chown -R retrieva:retrieva /usr/local/tomcat/logs /usr/local/tomcat/temp /usr/local/tomcat/work

@@ -1,0 +1,90 @@
+# Retrieva architecture
+
+An **ephemeral agent with persistent context**: every request is stateless; everything the agent knows lives in two
+capped structures that survive restarts.
+
+```
+                    ┌────────────────────────── Tomcat 10.1 (virtual threads) ─────────────────────────┐
+ client ── HTTPS ─▶ │ ApiServlet ─▶ ApiHandler  (auth · admission · body caps · JSON · metrics)        │
+                    │                    │                                                            │
+                    │                    ▼                                                            │
+                    │               Agent (retrieva-core, zero deps)                                   │
+                    │   parse claim ─▶ memory pass ─▶ swarm 32→16→8→1-4 ─▶ prime-voice answer          │
+                    │        │              ▲                 │                                       │
+                    │        │        ┌─────┴──────┐   ┌──────▼───────────────────────┐               │
+                    │        │        │  Memory    │   │ crawlers (virtual threads)   │               │
+                    │        │        │ 8 MB triples│◀─│ SafeHttp: allowlist · SSRF · │── egress ─▶ Wikipedia / arXiv
+                    │        │        │ 2 MB routes │   │ size caps · rate · breaker   │               │
+                    │        │        └─────┬──────┘   └──────────────────────────────┘               │
+                    │        ▼              │ snapshot                                                │
+                    │   Ingest gate: allowlist → sanitize → injection filter → 9 parsers vote → triples │
+                    └────────────────────────┬─────────────────────────────────────────────────────────┘
+                                             ▼ generations, atomic CURRENT pointer
+                                   Apache Arrow IPC files  ──▶  pandas sidecar (read-only analytics)
+```
+
+## Modules
+| module | role | dependencies |
+|---|---|---|
+| `retrieva-core` | sanitizer, nine parsers + ensemble, triple store, outline, ingestion gate, swarm engine, safe HTTP, sources | none |
+| `retrieva-arrow` | crash-safe Arrow persistence of `Memory` | Arrow 18, slf4j-jdk14 |
+| `retrieva-server` | Tomcat WAR: `ApiHandler` (pure), thin servlet + listener | Jakarta Servlet 6 (provided) |
+| `sidecar/` | pandas analytics over the Arrow files | pandas, pyarrow |
+| `reference-python/` | the original implementation; **the oracle** for golden-vector parity tests | none |
+
+## The request path
+1. **Parse.** The input is sanitized and split into sentences (same filter as crawled text); each sentence becomes a claim via the best-voted parser reading.
+2. **Mode.** One claim → quick (hard cap **3 s**, ≤ 32 concurrent crawlers). Several claims → long-form: ≤ **4 areas** resolve concurrently (≤ **128** crawlers), claims inside an area consecutively; budget **7 s** (2 areas) to **15 s** (4 areas).
+3. **Memory pass.** Score the claim against stored triples. A saved route plus a resolved score answers with **zero fetches**.
+4. **Swarm.** Layers of 32 → 16 → 8 → 1–4 crawlers (one crawler = one topic × one source). Layer 1 seeds are split evenly across for/against/neutral; later layers follow entities the evidence surfaced; the last layer consolidates the thinnest side (1–4 crawlers, more when murkier). All crawlers of a layer are cancelled at the deadline.
+5. **Verdict.** For/against/neutral buckets start with equal prior mass. Each triple adds `source_trust × corroboration × recency × relevance`; one voice per host per topic; corroboration = synonymous vs antonymous statements from *other* hosts; recency has a 365-day half-life from the time the source was added. Stop at ≥ 60% with ≥ 2 independent hosts, otherwise `unresolved` — never forced.
+6. **Answer.** Crawlers are numbered 1..128 (area *k* owns 32(*k*−1)+1 … 32*k*). The **entire answer** is the best retrieval point of crawlers **1 and the primes ≤ 127**, spoken from the highest number down to 1, composed from triples, never from source text.
+
+## Ingestion line (prompt-injection defence)
+allowlist gate (exact host suffix; unknown hosts dropped) → size caps → strip HTML/scripts/URLs/markdown/invisible+bidi characters → sentence-level directive/injection filter → nine parse shapes vote → strict triple charset (`[a-z0-9' -]`, no punctuation, so payloads cannot survive) → store. Files read back from disk are re-validated row by row on load. Only triples cross the boundary; no source text is ever given to a model.
+
+**Network policy** (`SafeHttp`): https only · no credentials in URL · default port only · exact-hostname allowlist · every resolved address must be public (loopback, RFC 1918, link-local, CGNAT, ULA, multicast, reserved and IPv4-mapped forms are refused) · manual redirects (≤ 3) re-checked per hop · response size cap · text content types only · per-source rate spacing and circuit breaker (arXiv: 1 request / 3 s).
+
+## Memory
+| structure | cap | contents |
+|---|---|---|
+| triples | **8 MB** logical (12 + Σ(string UTF-8 bytes + 4) + 29 per row) | interned strings + rows `(s,p,o,src,added,trust,hits)`; eviction by `trust × recency × (1+hits)` down to 90% |
+| outline | **2 MB** rendered text | for each answered claim, the topics and source locators that led to it (plus topic frequency); least-used, oldest routes evicted |
+
+### Arrow contract (`retrieva-arrow` writes, the sidecar reads)
+```
+DIR/CURRENT                     name of the live generation, replaced atomically
+DIR/gen-NNNNNN/strings.arrow    value: utf8                                 (row index = string id)
+DIR/gen-NNNNNN/triples.arrow    s,p,o,src: int32 (string ids) · added: float64 (epoch s) · trust_q: int32 (0..255) · hits: int32
+DIR/gen-NNNNNN/outline.md       route outline (grammar in Outline.java)
+DIR/gen-NNNNNN/MANIFEST.json    {"version":1,"strings":N,"triples":M,"sha256":{file:hex}}
+```
+A save writes a complete new generation, then flips `CURRENT`; a crash leaves the previous generation intact. Load verifies hashes, falls back to the previous generation on damage, and re-validates every row. The last 3 generations are kept.
+
+## HTTP API
+| endpoint | auth | |
+|---|---|---|
+| `GET /api/health` | none | liveness and memory sizes |
+| `GET /api/metrics` | bearer | Prometheus text |
+| `POST /api/ask` | bearer | `{"text": "..."}` → auto mode; add `"route": true` for the crawl route |
+| `POST /api/ask/quick`, `/api/ask/long` | bearer | force a mode |
+
+Errors: 400 bad body · 401 · 405 · 413 body too large · 422 no parseable claim · 429 busy (`Retry-After: 1`) · 500 generic. Config fails **closed**: no token (without `RETRIEVA_ALLOW_ANONYMOUS=true`), no sources, or any invalid value stops the deployment.
+
+## Configuration (environment variables, or servlet context parameters of the same name)
+`RETRIEVA_API_TOKEN` (≥ 16 chars) · `RETRIEVA_SOURCES` (`wikipedia,arxiv`, or `none`) · `RETRIEVA_CORPUS_FILE` (offline JSON corpus) · `RETRIEVA_TRUST` (`host=0.8,...`) · `RETRIEVA_USER_AGENT` (identify yourself; include a contact) · `RETRIEVA_MEMORY_DIR` · `RETRIEVA_QUICK_BUDGET_S` (≤ 3) · `RETRIEVA_MAX_CRAWLERS` (≤ 128) · `RETRIEVA_QUICK_CONCURRENCY` · `RETRIEVA_LONG_CONCURRENCY` · `RETRIEVA_PERSIST_SECONDS` · `RETRIEVA_MAX_QUICK_BODY` · `RETRIEVA_MAX_LONG_BODY`.
+
+## How this is verified
+| layer | how | where it ran |
+|---|---|---|
+| core (parsers, sanitizer, store, outline, engine, sources policy) | 11 checks incl. **golden-vector parity with the Python reference** (parser readings, ensemble, verdicts, shares, voices, weights, routes, ingestion stats) | compiled with `javac` and run during development; also `mvn verify` in CI |
+| `ApiHandler` / `AppConfig` | 5 checks (auth, validation, quick + long, 429 admission, config fail-closed) | same |
+| Arrow persistence, Tomcat wiring (`ApiServlet`, `AppListener`), end-to-end restart test | JUnit + embedded Tomcat | **CI only** — the development sandbox could not download Arrow/Tomcat/Pandas |
+| pandas sidecar, Java→Python Arrow contract | pytest reading a directory written by the Java code | **CI only** |
+| live Wikipedia/arXiv crawling | response parsers tested on hand-written fixtures shaped per the public API docs; the network path itself is untested | not run anywhere yet |
+
+## Operations
+* `docker compose up` (see `docker-compose.yml`); the WAR is `ROOT.war`. Give the JVM `--add-opens=java.base/java.nio=ALL-UNNAMED` (Arrow) — the image sets it.
+* Memory volume: `/var/lib/retrieva`. Back it up by copying the newest `gen-*` directory plus `CURRENT`.
+* Set `RETRIEVA_USER_AGENT` with a real contact before crawling anything.
+* Regenerate golden vectors after any change to the Python reference: `python reference-python/tools/gen_golden.py` (CI fails if they drift).
