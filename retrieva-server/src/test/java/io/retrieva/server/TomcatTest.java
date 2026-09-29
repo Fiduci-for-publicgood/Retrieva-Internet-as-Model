@@ -60,7 +60,8 @@ class TomcatTest {
             Map<String, Object> m = Json.obj(Json.parse(r.body()));
             assertEquals("for", m.get("verdict"));
             assertEquals(false, m.get("from_memory"));
-            assertEquals("application/json; charset=utf-8", r.headers().firstValue("Content-Type").orElse(""));
+            // Tomcat normalises the separator (drops the space after the semicolon), so compare without whitespace.
+            assertEquals("application/json;charset=utf-8", r.headers().firstValue("Content-Type").orElse("").replace(" ", "").toLowerCase());
         } finally {
             first.stop();      // contextDestroyed persists memory
             first.destroy();
