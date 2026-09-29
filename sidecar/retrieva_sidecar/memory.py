@@ -45,8 +45,8 @@ def _sha256(path: Path) -> str:
 
 
 def _read_table(path: Path) -> pa.Table:
-    with pa.memory_map(str(path), "r") as src:
-        return ipc.open_file(src).read_all()
+    # Read into memory rather than memory-mapping: the files are small (<= a few MB) and this leaves no dangling mapping.
+    return ipc.open_file(pa.BufferReader(pa.py_buffer(path.read_bytes()))).read_all()
 
 
 def _load_generation(g: Path) -> Memory:

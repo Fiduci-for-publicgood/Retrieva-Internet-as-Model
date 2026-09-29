@@ -92,12 +92,20 @@ class TomcatTest {
         ctx.addParameter("RETRIEVA_CORPUS_FILE", Path.of(System.getProperty("basedir", "."), "src", "test", "resources", "corpus.json").toString());
         ctx.addParameter("RETRIEVA_MEMORY_DIR", tmp.resolve("m").toString());
         ctx.addApplicationListener(AppListener.class.getName());
-        tomcat.start();      // Tomcat starts, but the context must be failed
+        try {
+            tomcat.start();      // the host reports the failed child by throwing
+        } catch (org.apache.catalina.LifecycleException expected) {
+            // ok: a deployment with unsafe configuration must not come up
+        }
         try {
             assertTrue(!ctx.getState().isAvailable(), "context must not be available when configuration is unsafe");
         } finally {
-            tomcat.stop();
-            tomcat.destroy();
+            try {
+                tomcat.stop();
+                tomcat.destroy();
+            } catch (org.apache.catalina.LifecycleException ignored) {
+                // already failed
+            }
         }
     }
 }

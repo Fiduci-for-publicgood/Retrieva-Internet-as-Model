@@ -70,9 +70,10 @@ def test_out_of_range_string_ids_are_rejected(tmp_path, sample_triples):
     import pyarrow as pa
     import pyarrow.ipc as ipc
     g = write_generation(tmp_path, 1, sample_triples)
-    t = ipc.open_file(str(g / "triples.arrow")).read_all().to_pandas()
-    t.loc[0, "s"] = 9999
-    tbl = pa.Table.from_pandas(t, preserve_index=False).cast(ipc.open_file(str(g / "triples.arrow")).schema)
+    tbl = ipc.open_file(pa.BufferReader(pa.py_buffer((g / "triples.arrow").read_bytes()))).read_all()
+    s = tbl.column("s").to_pylist()
+    s[0] = 9999
+    tbl = tbl.set_column(tbl.schema.get_field_index("s"), "s", pa.array(s, pa.int32()))
     with pa.OSFile(str(g / "triples.arrow"), "wb") as sink, ipc.new_file(sink, tbl.schema) as w:
         w.write_table(tbl)
     mf = json.loads((g / "MANIFEST.json").read_text())
