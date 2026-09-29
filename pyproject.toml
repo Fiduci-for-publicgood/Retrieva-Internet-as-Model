@@ -1,0 +1,11 @@
+[project]
+name = "retrieva"
+version = "0.1.0"
+description = "Ephemeral agent with persistent triple + route memory"
+requires-python = ">=3.11"
+
+[project.scripts]
+retrieva = "retrieva.cli:main"
+
+[tool.setuptools]
+packages = ["retrieva"]
