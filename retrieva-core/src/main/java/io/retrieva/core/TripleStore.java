@@ -99,6 +99,10 @@ public final class TripleStore {
         dirty = false;
     }
 
+    public void markDirty() {
+        dirty = true;
+    }
+
     public static boolean valid(String s, String p, String o, String src) {
         if (!FIELD.matcher(s).matches() || !FIELD.matcher(p).matches() || !FIELD.matcher(o).matches() || !LOCATOR.matcher(src).matches()) return false;
         return !Text.isInjection(s + " " + p + " " + o);

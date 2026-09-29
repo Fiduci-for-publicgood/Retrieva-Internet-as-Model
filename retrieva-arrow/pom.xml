@@ -1,0 +1,16 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<project xmlns="http://maven.apache.org/POM/4.0.0" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+         xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 http://maven.apache.org/xsd/maven-4.0.0.xsd">
+  <modelVersion>4.0.0</modelVersion>
+  <parent><groupId>io.retrieva</groupId><artifactId>retrieva-parent</artifactId><version>1.0.0-SNAPSHOT</version></parent>
+  <artifactId>retrieva-arrow</artifactId>
+  <name>Retrieva Arrow storage</name>
+  <description>Apache Arrow IPC persistence for the triple store and route outline, with crash-safe generations.</description>
+  <dependencies>
+    <dependency><groupId>io.retrieva</groupId><artifactId>retrieva-core</artifactId><version>${project.version}</version></dependency>
+    <dependency><groupId>org.apache.arrow</groupId><artifactId>arrow-vector</artifactId></dependency>
+    <dependency><groupId>org.apache.arrow</groupId><artifactId>arrow-memory-unsafe</artifactId></dependency>
+    <dependency><groupId>org.slf4j</groupId><artifactId>slf4j-jdk14</artifactId><version>2.0.16</version><scope>runtime</scope></dependency>
+    <dependency><groupId>org.junit.jupiter</groupId><artifactId>junit-jupiter</artifactId></dependency>
+  </dependencies>
+</project>

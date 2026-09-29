@@ -30,4 +30,9 @@ public final class Memory {
         store.markClean();
         outline.markClean();
     }
+
+    /** Force the next persistence pass to write (used when a save failed). */
+    public void markDirty() {
+        store.markDirty();
+    }
 }
